@@ -1,36 +1,59 @@
 #include <iostream>
 #include<windows.h> 
+#include <random>
 
 import threadpool;
 
-int slowfunc(int x)
+double MonteCarloPi(int N)
 {
-	Sleep(1000);
-	return x;
+	std::default_random_engine gen;
+	std::uniform_real_distribution<double> dist(0, 1);
+	int inside = 0;
+	for (int i = 0; i < N; ++i)
+	{
+		double x = dist(gen);
+		double y = dist(gen);
+		inside += x * x + y * y < 1;
+	}
+	double guess= 4*(double)inside / N;
+	std::cout << guess << std::endl;
+	return guess;
 }
 
-int quickfunc(int x)
+double MonteCarloE(int N)
 {
-	return 10*x;
+	std::default_random_engine gen;
+	std::uniform_real_distribution<double> dist(0, 1);
+	int tries = 0;
+	for (int i = 0; i < N; ++i)
+	{
+		double sum = 0;
+		int count = 0;
+		while (sum < 1)
+		{
+			sum += dist(gen);
+			count++;
+		}
+		tries += count;
+	}
+	double guess= (double)tries / N;
+	std::cout << guess << std::endl;
+	return guess;
 }
 
 
 int main()
 {
-	Threadpool pool(2);
+	utility::Threadpool pool(2);
 	std::cout << "Testing thread pool" << std::endl;
 
-	auto slowresult1 = pool.submit(slowfunc, 1);
-	auto slowresult2 = pool.submit(slowfunc, 2);
-	auto slowresult3 = pool.submit(slowfunc, 3);
-	auto slowresult4 = pool.submit(slowfunc, 4);
-	auto quickresult = pool.submit(quickfunc,1);
+	auto Pi1 = pool.submit(MonteCarloPi, 1000000);
+	auto E1 = pool.submit(MonteCarloE, 1000000);
 
-	std::cout << quickresult.get() << std::endl;
-	std::cout << slowresult1.get() << std::endl;
-	std::cout << slowresult2.get() << std::endl;
-	std::cout << slowresult3.get() << std::endl;
-	std::cout << slowresult4.get() << std::endl;
+
+	std::cout << Pi1.get() << std::endl;
+	std::cout << E1.get() << std::endl;
+
 	
 	return 0;
 }
