@@ -1,12 +1,15 @@
 #include <iostream>
 #include<windows.h> 
 #include <random>
-
+#include <chrono>
 import threadpool;
+
+using namespace std::chrono;
 
 double MonteCarloPi(int N)
 {
-	std::default_random_engine gen;
+	std::random_device rd;
+	std::default_random_engine gen(rd());
 	std::uniform_real_distribution<double> dist(0, 1);
 	int inside = 0;
 	for (int i = 0; i < N; ++i)
@@ -16,13 +19,14 @@ double MonteCarloPi(int N)
 		inside += x * x + y * y < 1;
 	}
 	double guess= 4*(double)inside / N;
-	std::cout << guess << std::endl;
+	
 	return guess;
 }
 
 double MonteCarloE(int N)
 {
-	std::default_random_engine gen;
+	std::random_device rd;
+	std::default_random_engine gen(rd());
 	std::uniform_real_distribution<double> dist(0, 1);
 	int tries = 0;
 	for (int i = 0; i < N; ++i)
@@ -37,23 +41,40 @@ double MonteCarloE(int N)
 		tries += count;
 	}
 	double guess= (double)tries / N;
-	std::cout << guess << std::endl;
 	return guess;
 }
 
 
 int main()
 {
-	utility::Threadpool pool(2);
+	utility::Threadpool pool(6);
 	std::cout << "Testing thread pool" << std::endl;
 
-	auto Pi1 = pool.submit(MonteCarloPi, 1000000);
-	auto E1 = pool.submit(MonteCarloE, 1000000);
+	std::vector<std::pair<std::future<double>,int>> PI;
+	std::vector<std::pair<std::future<double>,int>> E;
+	auto start = high_resolution_clock::now();
 
+	for (int N = 1e6; N < 1e9; N*=10)
+	{
+		E.push_back(std::make_pair(pool.submit(MonteCarloE, N),N));
+		PI.push_back(std::make_pair(pool.submit(MonteCarloPi, N), N));
+	}
+	
+	for (auto& fut : E)
+	{
+		std::cout << fut.first.get() << std::endl;
+	}
+	for (auto& fut : PI)
+	{
+		std::cout << fut.first.get() << std::endl;
+	}
 
-	std::cout << Pi1.get() << std::endl;
-	std::cout << E1.get() << std::endl;
+	auto stop = high_resolution_clock::now();
+	auto duration = duration_cast<milliseconds>(stop - start);
 
+	std::cout << "Time taken by function: "
+		<< duration.count() << " milliseconds" << std::endl;
 	
 	return 0;
+
 }

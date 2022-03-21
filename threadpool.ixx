@@ -7,10 +7,14 @@ module;
 #include <semaphore>
 #include <functional>
 #include <optional>
+#include <coroutine>
 #include <iostream>
+#include <random>
 export module threadpool;
 
 import wsdeque;
+import semaphore;
+import task;
 
 namespace utility
 {
@@ -19,53 +23,58 @@ namespace utility
 	private:
 		struct workdeque
 		{
-			std::counting_semaphore<1> sem{ 0 };
+			utility::fast_semaphore permit;
 			container::WSDeque<std::function<void()>> work;
-		};
+		};	
 
 		std::vector<workdeque> work_load; //Local work queues
-		std::atomic<std::int64_t> jobs_left; //Number of jobs in the pool
-		std::size_t count = 0;
+		std::atomic<std::uint64_t> jobs_left; //Number of jobs in the pool
+		std::uint64_t count = 0;
 		std::vector<std::jthread> threads;
 
 		template <typename Task>
-		void load(Task&& task) //Puts packaged task into work_load
+		void schedule(Task&& task)									//Puts task into work_load
 		{
-			std::size_t qID = count++ % work_load.size(); //Gets index of work_deque least recently executed on
+			std::size_t qID = count++ % work_load.size();			//Gets index of work_deque least recently executed on
 
-			jobs_left.fetch_add(1, std::memory_order::relaxed); //Adds 1 to the work_left counter
-			work_load[qID].work.emplace([task]() { (*task)(); }); //Adds the function to the queue
-			work_load[qID].sem.release(); //Increment semaphore so task can execute
+			jobs_left.fetch_add(1, std::memory_order::relaxed);		//Adds 1 to the work_left counter
+			work_load[qID].work.emplace(std::forward<Task>(task));	//Adds the function to the queue
+			work_load[qID].permit.release();						//Increment semaphore so task can execute
 		}
 
 	public:
-		// Construct threadpool (default number of threads is max allowed by hardware).  Must be explicit e.g. Threadpool pool(4)
-		explicit Threadpool(std::size_t threadN = std::thread::hardware_concurrency()) : work_load(threadN)
+		// Construct threadpool (default number of threads is max allowed by hardware).
+		Threadpool(std::size_t threadN = std::thread::hardware_concurrency()) : work_load(threadN)
 		{
 			for (std::size_t tID = 0; tID < threadN; ++tID)
 			{
+				thread_local std::uniform_int_distribution<size_t> dist(0, threadN);
+				thread_local std::minstd_rand gen(std::random_device{}());
+
 				threads.emplace_back
 				(
 					[&, qID = tID](std::stop_token stop_token)
 					{
+						
 						do {
-							work_load[qID].sem.try_acquire();
+							work_load[qID].permit.acquire();															//Wait until work permit
 							do {
-								std::size_t newqID = work_load[qID].work.empty() ? rand() % work_load.size() : qID; //Choose random new queue ID iff old queue is empty
-
-								if (std::optional<std::function<void()>> task = work_load[newqID].work.steal()) //If the new queue can be stolen from then execute that function
+								const std::size_t newqID = work_load[qID].work.empty() ? dist(gen) : qID;				//Choose random new queue ID iff old queue is empty
+								if (std::optional<std::function<void()>> task = work_load[newqID].work.steal())			//If the queue can be stolen from... 
 								{
-									jobs_left.fetch_sub(1, std::memory_order::release);
-									std::invoke(std::move(*task));
+									jobs_left.fetch_sub(1, std::memory_order::release);									//Decrement the work counter
+									std::invoke(std::move(*task));														//...then execute that function
 								}
-							} while (jobs_left.load(std::memory_order::acquire));
-						} while (!stop_token.stop_requested());
+							}
+							while (jobs_left.load(std::memory_order::acquire));											//Continue to attempt stealing while there are jobs left
+						}
+						while (!stop_token.stop_requested());
 					}
 				);
 			}
 		}
 
-		~Threadpool()
+		~Threadpool() noexcept
 		{
 			//Stop all threads working upon destruction (they are jthreads so automatically rejoin)
 			for (auto& thread : threads)
@@ -75,28 +84,39 @@ namespace utility
 			//Unblock all work_deques
 			for (auto& work_stream : work_load)
 			{
-				work_stream.sem.release();
+				work_stream.permit.release();
 			}
 		}
 
 		// Submit a non-void function and returns the associated future
 		template <typename Func, typename... Args, typename Ret = std::invoke_result_t<std::decay_t<Func>, std::decay_t<Args>...>>
-		std::future<Ret> submit(Func&& f, Args&&... args) requires(!std::is_void<Ret>::value)
+		requires(std::invocable<Func,Args...> && !std::is_void_v<Ret>)
+		std::future<Ret> submit(Func&& f, Args&&... args) 
 		{
-			auto task = std::make_shared<std::packaged_task<Ret()>>(std::bind(std::forward<Func>(f), std::forward<Args>(args)...));
-			std::future<Ret> future = task->get_future();
-			load(task);
+			//auto task = std::make_shared<std::packaged_task<Ret()>>(std::bind(std::forward<Func>(f), std::forward<Args>(args)...));
+			auto shared_promise = std::make_shared<std::promise<Ret>>();
+			auto task = [f = std::forward<Func>(f), ... args = std::forward<Args>(args), promise = shared_promise]() { promise->set_value(f(args...)); };
+			std::future<Ret> future = shared_promise->get_future();
+			schedule(std::move(task));
 
 			return future;
 		}
 
-		// Submits a void function
+		// Submits a void function and returns a boolean future
 		template <typename Func, typename... Args, typename Ret = std::invoke_result_t<std::decay_t<Func>, std::decay_t<Args>...>>
-		void submit(Func&& f, Args&&... args) requires(std::is_void<Ret>::value)
+		requires(std::invocable<Func,Args...> && std::is_void_v<Ret>)
+		std::future<bool> submit(Func&& f, Args&&... args) 
 		{
-			auto task = std::make_shared<std::packaged_task<Ret()>>(std::bind(std::forward<Func>(f), std::forward<Args>(args)...));
-			load(task);
-		}
-	};//end ThreadPool
+			auto shared_promise = std::make_shared<std::promise<Ret>>();
+			auto task = [f = std::forward<Func>(f), ... args = std::forward<Args>(args), promise = shared_promise]() { promise->set_value(true); };
+			std::future<Ret> future = shared_promise->get_future();
+			schedule(std::move(task));
 
-}//end utility
+			return future;
+
+		}
+	};
+	//end ThreadPool
+
+}
+//end utility

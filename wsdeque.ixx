@@ -10,6 +10,7 @@ module;
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <deque>
 export module wsdeque;
 
 namespace container {
@@ -20,32 +21,32 @@ namespace container {
 	class RingBuffer
 	{
 	private:
-		std::int64_t _capacity;
-		std::int64_t _mask;
+		std::uint64_t _capacity;
+		std::uint64_t _mask;
 		std::unique_ptr<T[]> _buff = std::make_unique_for_overwrite<T[]>(_capacity);
 
 	public:
-		explicit RingBuffer(std::int64_t cap) : _capacity{ cap }, _mask{ cap - 1 }
+		explicit RingBuffer(std::uint64_t cap) : _capacity{ cap }, _mask{ cap - 1 }
 		{
-			assert(cap && (!(cap& (cap - 1))) && "Capacity must be buf power of 2!");
+			assert(cap && (!(cap& (cap - 1))));
 		}
 
-		std::int64_t capacity() const noexcept { return _capacity; }
+		std::uint64_t capacity() const noexcept { return _capacity; }
 
-		void store(std::int64_t i, T&& x) noexcept
+		void store(std::uint64_t i, T&& x) noexcept
 		{
 			_buff[i & _mask] = std::move(x);
 		}
 
-		T load(std::int64_t i) const noexcept
+		T load(std::uint64_t i) const noexcept
 		{
 			return _buff[i & _mask];
 		}
 
-		RingBuffer<T>* resize(std::int64_t b, std::int64_t t) const
+		RingBuffer<T>* resize(std::uint64_t b, std::uint64_t t) const
 		{
 			RingBuffer<T>* ptr = new RingBuffer{ 2 * _capacity };
-			for (std::int64_t i = t; i != b; ++i)
+			for (std::uint64_t i = t; i != b; ++i)
 			{
 				ptr->store(i, load(i));
 			}
@@ -57,13 +58,13 @@ namespace container {
 	class WSDeque
 	{
 	private:
-		alignas(std::hardware_destructive_interference_size) std::atomic<std::int64_t> _top;
-		alignas(std::hardware_destructive_interference_size) std::atomic<std::int64_t> _bottom;
+		alignas(std::hardware_destructive_interference_size) std::atomic<std::uint64_t> _top;
+		alignas(std::hardware_destructive_interference_size) std::atomic<std::uint64_t> _bottom;
 		alignas(std::hardware_destructive_interference_size) std::atomic<RingBuffer<T>*> _buffer;
 		std::vector<std::unique_ptr<RingBuffer<T>>> _garbage;
 
 	public:
-		explicit WSDeque(std::int64_t cap = 1024) : _top(0), _bottom(0), _buffer(new RingBuffer<T>{ cap })
+		explicit WSDeque(std::uint64_t cap = 1024) : _top(0), _bottom(0), _buffer(new RingBuffer<T>{ cap })
 		{
 			_garbage.reserve(32);
 		}
@@ -78,12 +79,12 @@ namespace container {
 
 		std::size_t size() const noexcept
 		{
-			int64_t b = _bottom.load(std::memory_order::relaxed);
-			int64_t t = _top.load(std::memory_order::relaxed);
+			uint64_t b = _bottom.load(std::memory_order::relaxed);
+			uint64_t t = _top.load(std::memory_order::relaxed);
 			return static_cast<std::size_t>(b >= t ? b - t : 0);
 		}
 
-		int64_t capacity() const noexcept
+		uint64_t capacity() const noexcept
 		{
 			return _buffer.load(std::memory_order_relaxed)->capacity();
 		}
@@ -96,18 +97,17 @@ namespace container {
 		template <typename... Args>
 		void emplace(Args&&... args)
 		{
-			T object(std::forward<Args>(args)...);
-
-			std::int64_t b = _bottom.load(std::memory_order::relaxed);
-			std::int64_t t = _top.load(std::memory_order::acquire);
+			std::uint64_t b = _bottom.load(std::memory_order::relaxed);
+			std::uint64_t t = _top.load(std::memory_order::acquire);
 			RingBuffer<T>* buf = _buffer.load(std::memory_order::relaxed);
 
-			if (buf->capacity() < (b - t) + 1) {
+			if (buf->capacity() < (b - t) + 1)
+			{
 				_garbage.emplace_back(std::exchange(buf, buf->resize(b, t)));
 				_buffer.store(buf, std::memory_order::relaxed);
 			}
 
-			buf->store(b, std::move(object));
+			buf->store(b, std::forward<Args>(args)...);
 
 			std::atomic_thread_fence(std::memory_order::release);
 			_bottom.store(b + 1, std::memory_order::relaxed);
@@ -115,12 +115,12 @@ namespace container {
 
 		std::optional<T> pop() noexcept
 		{
-			std::int64_t b = _bottom.load(std::memory_order::relaxed) - 1;
+			std::uint64_t b = _bottom.load(std::memory_order::relaxed) - 1;
 			RingBuffer<T>* buf = _buffer.load(std::memory_order::relaxed);
 
 
 			std::atomic_thread_fence(std::memory_order::seq_cst);
-			std::int64_t t = _top.load(std::memory_order::relaxed);
+			std::uint64_t t = _top.load(std::memory_order::relaxed);
 
 			if (t <= b)
 			{
@@ -146,9 +146,9 @@ namespace container {
 
 		std::optional<T> steal() noexcept
 		{
-			std::int64_t t = _top.load(std::memory_order::acquire);
+			std::uint64_t t = _top.load(std::memory_order::acquire);
 			std::atomic_thread_fence(std::memory_order::seq_cst);
-			std::int64_t b = _bottom.load(std::memory_order::acquire);
+			std::uint64_t b = _bottom.load(std::memory_order::acquire);
 
 			if (t < b)
 			{

@@ -24,5 +24,11 @@
     <ClCompile Include="wsdeque.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="semaphore.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="task.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
