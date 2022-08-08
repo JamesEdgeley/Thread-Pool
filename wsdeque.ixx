@@ -1,17 +1,17 @@
-module;
-#include <atomic>
-#include <cassert>
-#include <concepts>
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <new>
-#include <optional>
-#include <type_traits>
-#include <utility>
-#include <vector>
-#include <deque>
 export module wsdeque;
+
+import <atomic>;
+import <cassert>;
+import <concepts>;
+import <cstddef>;
+import <cstdint>;
+import <memory>;
+import <new>;
+import <optional>;
+import <type_traits>;
+import <utility>;
+import <vector>;
+import <deque>;
 
 namespace container {
 	template <typename T>

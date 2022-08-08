@@ -1,16 +1,15 @@
-module;
-#include <vector>
-#include <memory>
-#include <atomic>
-#include <thread>
-#include <future>
-#include <semaphore>
-#include <functional>
-#include <optional>
-#include <coroutine>
-#include <iostream>
-#include <random>
 export module threadpool;
+
+import <memory>;
+import <atomic>;
+import <thread>;
+import <future>;
+import <semaphore>;
+import <functional>;
+import <optional>;
+import <coroutine>;
+import <iostream>;
+import <random>;
 
 import wsdeque;
 import semaphore;
@@ -25,7 +24,7 @@ namespace utility
 		{
 			utility::fast_semaphore permit;
 			container::WSDeque<std::function<void()>> work;
-		};	
+		};
 
 		std::vector<workdeque> work_load; //Local work queues
 		std::atomic<std::uint64_t> jobs_left; //Number of jobs in the pool
@@ -44,7 +43,7 @@ namespace utility
 
 	public:
 		// Construct threadpool (default number of threads is max allowed by hardware).
-		Threadpool(std::size_t threadN = std::thread::hardware_concurrency()) : work_load(threadN)
+		Threadpool(const std::size_t& threadN = std::thread::hardware_concurrency()) : work_load(threadN)
 		{
 			for (std::size_t tID = 0; tID < threadN; ++tID)
 			{
@@ -55,20 +54,19 @@ namespace utility
 				(
 					[&, qID = tID](std::stop_token stop_token)
 					{
-						
+
 						do {
 							work_load[qID].permit.acquire();															//Wait until work permit
 							do {
 								const std::size_t newqID = work_load[qID].work.empty() ? dist(gen) : qID;				//Choose random new queue ID iff old queue is empty
 								if (std::optional<std::function<void()>> task = work_load[newqID].work.steal())			//If the queue can be stolen from... 
 								{
-									jobs_left.fetch_sub(1, std::memory_order::release);									//Decrement the work counter
 									std::invoke(std::move(*task));														//...then execute that function
+									jobs_left.fetch_sub(1, std::memory_order::release);									//Decrement the work counter
+
 								}
-							}
-							while (jobs_left.load(std::memory_order::acquire));											//Continue to attempt stealing while there are jobs left
-						}
-						while (!stop_token.stop_requested());
+							} while (jobs_left.load(std::memory_order::acquire));										//Continue to attempt stealing while there are jobs left
+						} while (!stop_token.stop_requested());
 					}
 				);
 			}
@@ -90,30 +88,38 @@ namespace utility
 
 		// Submit a non-void function and returns the associated future
 		template <typename Func, typename... Args, typename Ret = std::invoke_result_t<std::decay_t<Func>, std::decay_t<Args>...>>
-		requires(std::invocable<Func,Args...> && !std::is_void_v<Ret>)
-		std::future<Ret> submit(Func&& f, Args&&... args) 
+			requires(std::invocable<Func, Args...>)
+		[[nodiscard]] std::future<Ret> submit(Func&& f, Args&&... args)
 		{
-			//auto task = std::make_shared<std::packaged_task<Ret()>>(std::bind(std::forward<Func>(f), std::forward<Args>(args)...));
 			auto shared_promise = std::make_shared<std::promise<Ret>>();
-			auto task = [f = std::forward<Func>(f), ... args = std::forward<Args>(args), promise = shared_promise]() { promise->set_value(f(args...)); };
+
+			auto task = [f = std::forward<Func>(f), ... args = std::forward<Args>(args), promise = shared_promise]()
+			{
+				if constexpr (std::is_void_v<Ret>)
+				{
+					f(args...);
+					promise->set_value();
+				}
+				else
+				{
+					promise->set_value(f(args...));
+				}
+			};
 			std::future<Ret> future = shared_promise->get_future();
 			schedule(std::move(task));
 
 			return future;
 		}
 
-		// Submits a void function and returns a boolean future
-		template <typename Func, typename... Args, typename Ret = std::invoke_result_t<std::decay_t<Func>, std::decay_t<Args>...>>
-		requires(std::invocable<Func,Args...> && std::is_void_v<Ret>)
-		std::future<bool> submit(Func&& f, Args&&... args) 
+
+		[[nodiscard]] size_t jobs_remaining()
 		{
-			auto shared_promise = std::make_shared<std::promise<Ret>>();
-			auto task = [f = std::forward<Func>(f), ... args = std::forward<Args>(args), promise = shared_promise]() { promise->set_value(true); };
-			std::future<Ret> future = shared_promise->get_future();
-			schedule(std::move(task));
+			return jobs_left;
+		}
 
-			return future;
-
+		[[nodiscard]] size_t threads_running()
+		{
+			return threads.size();
 		}
 	};
 	//end ThreadPool
